@@ -619,21 +619,24 @@ let calSelectedDate = null;
 
 // ---------- STORAGE ----------
 // Use Claude's built-in window.storage when previewing inside Claude.ai.
-// Otherwise (real hosting, e.g. Neocities): shared family data (roster, locations,
-// memories, check-ins, calendar, profile pictures) syncs across everyone's phones
-// via a small free key-value store (kvdb.io). Personal data (journal entries)
-// always stays in localStorage on that one device only — never sent anywhere.
+// Otherwise (real hosting, e.g. GitHub Pages): shared family data (roster, locations,
+// memories, check-ins, calendar, profile pictures) syncs across everyone's phones via
+// a free Firebase Realtime Database. Personal data (journal entries) always stays in
+// localStorage on that one device only — never sent anywhere.
 //
-// Note: this kvdb bucket has no access key, meaning anyone who somehow guessed
-// this exact long random ID could read it. It isn't linked or listed anywhere
-// public, so this is reasonable for a private family app, not bank-vault security.
-const KVDB_BUCKET = "i4cT0EwlLF4TvceRR94m7dy2jq1s";
+// Note: this database has open read/write rules (no login required), meaning anyone
+// who somehow found this exact project URL could read or write it. It isn't linked or
+// listed anywhere public, so this is reasonable for a private family app, not bank-vault
+// security.
+const FIREBASE_BASE = "https://meet-the-schrickkers-default-rtdb.firebaseio.com";
 
 const storage = (window.storage && typeof window.storage.get === 'function')
   ? window.storage
   : (function () {
       function localKey(key) { return 'schrickkers:me:' + key; }
-      function kvdbUrl(key) { return 'https://kvdb.io/' + KVDB_BUCKET + '/' + encodeURIComponent(key); }
+      // Firebase keys can't contain . # $ [ ] — swap those out to keep any key safe.
+      function fbKey(key) { return key.replace(/[.#$[]]/g, '_'); }
+      function fbUrl(key) { return FIREBASE_BASE + '/' + fbKey(key) + '.json'; }
 
       async function localGet(key) {
         try {
@@ -652,11 +655,11 @@ const storage = (window.storage && typeof window.storage.get === 'function')
         async get(key, shared) {
           if (!shared) return localGet(key);
           try {
-            const res = await fetch(kvdbUrl(key));
-            if (res.status === 404) return null;
-            if (!res.ok) throw new Error('kvdb get failed');
-            const value = await res.text();
-            return { key, value, shared: true };
+            const res = await fetch(fbUrl(key));
+            if (!res.ok) throw new Error('firebase get failed');
+            const data = await res.json();
+            if (data === null || data === undefined) return null;
+            return { key, value: data, shared: true };
           } catch (e) {
             try {
               const raw = localStorage.getItem('schrickkers:cache:' + key);
@@ -667,8 +670,8 @@ const storage = (window.storage && typeof window.storage.get === 'function')
         async set(key, value, shared) {
           if (!shared) return localSet(key, value);
           try {
-            const res = await fetch(kvdbUrl(key), { method: 'POST', body: value });
-            if (!res.ok) throw new Error('kvdb set failed');
+            const res = await fetch(fbUrl(key), { method: 'PUT', body: JSON.stringify(value) });
+            if (!res.ok) throw new Error('firebase set failed');
             try { localStorage.setItem('schrickkers:cache:' + key, value); } catch (e) {}
             return { key, value, shared: true };
           } catch (e) {
@@ -682,7 +685,7 @@ const storage = (window.storage && typeof window.storage.get === 'function')
             catch (e) { return null; }
           }
           try {
-            const res = await fetch(kvdbUrl(key), { method: 'DELETE' });
+            const res = await fetch(fbUrl(key), { method: 'DELETE' });
             try { localStorage.removeItem('schrickkers:cache:' + key); } catch (e) {}
             return { key, deleted: res.ok, shared: true };
           } catch (e) { return null; }
@@ -700,9 +703,11 @@ const storage = (window.storage && typeof window.storage.get === 'function')
             } catch (e) { return null; }
           }
           try {
-            const res = await fetch('https://kvdb.io/' + KVDB_BUCKET + '/?prefix=' + encodeURIComponent(prefix || '') + '&format=json');
-            if (!res.ok) throw new Error('kvdb list failed');
-            const keys = await res.json();
+            const res = await fetch(FIREBASE_BASE + '/.json?shallow=true');
+            if (!res.ok) throw new Error('firebase list failed');
+            const data = await res.json();
+            const allKeys = data ? Object.keys(data) : [];
+            const keys = prefix ? allKeys.filter(k => k.startsWith(fbKey(prefix))) : allKeys;
             return { keys, prefix, shared: true };
           } catch (e) { return null; }
         }
