@@ -639,7 +639,10 @@ const FIREBASE_BASE = "https://family-ties-388a5-default-rtdb.firebaseio.com";
 
 // ---------- PUSH NOTIFICATIONS (OneSignal) ----------
 const ONESIGNAL_APP_ID = "edcfb4d8-8e76-4e08-8f8b-46705981bb63";
-const ONESIGNAL_REST_KEY = "os_v2_app_5xh3jweoozhard4lizyftan3mpb57jlcinteytffhofutyzmz7k5wdcxhw33ir4s44glrm535atcwmo7hi3lwx7bxutamu4gv5u2pai";
+// Cross-user pushes go through a small Cloudflare Worker relay, because OneSignal's
+// API rejects calls made directly from a web page (and the secret API key shouldn't
+// live in this public page anyway — it lives inside the Worker instead).
+const PUSH_RELAY_URL = "https://family-ties-push.cameronschrickker2.workers.dev/";
 
 window.OneSignalDeferred = window.OneSignalDeferred || [];
 OneSignalDeferred.push(async function (OneSignal) {
@@ -671,24 +674,13 @@ function dismissNotifBanner() {
 }
 
 async function sendPush(title, body, targetNames, view) {
-  if (!ONESIGNAL_APP_ID) return;
   const targets = (targetNames || []).filter(Boolean);
   if (targets.length === 0) return;
   try {
-    await fetch("https://onesignal.com/api/v1/notifications", {
+    await fetch(PUSH_RELAY_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Authorization": "Key " + ONESIGNAL_REST_KEY
-      },
-      body: JSON.stringify({
-        app_id: ONESIGNAL_APP_ID,
-        include_aliases: { external_id: targets },
-        target_channel: "push",
-        headings: { en: title },
-        contents: { en: body },
-        data: { view: view || "today" }
-      })
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ title, body, targetNames: targets, view: view || "today" })
     });
   } catch (e) { /* non-critical */ }
 }
@@ -698,7 +690,7 @@ const storage = (window.storage && typeof window.storage.get === 'function')
   : (function () {
       function localKey(key) { return 'schrickkers:me:' + key; }
       // Firebase keys can't contain . # $ [ ] — swap those out to keep any key safe.
-      function fbKey(key) { return key.replace(/[.#$[]]/g, '_'); }
+      function fbKey(key) { return key.replace(/[.#$[\]]/g, '_'); }
       function fbUrl(key) { return FIREBASE_BASE + '/' + fbKey(key) + '.json'; }
 
       async function localGet(key) {
@@ -1181,7 +1173,7 @@ async function loadFamily(){
 function renderVerse(){
   const idx = dayOfYear(new Date()) % VERSES.length;
   const [text, ref] = VERSES[idx];
-  document.getElementById('verse-text').textContent = "\u201C" + text + "\u201D";
+  document.getElementById('verse-text').textContent = "“" + text + "”";
   document.getElementById('verse-ref').textContent = ref;
 }
 function renderEmojiPicker(){
@@ -1211,7 +1203,7 @@ async function renderAll(){
   startHeartbeat();
   startLocationAutoShare();
   await renderToday();
-  document.getElementById('header-tag').textContent = "hi " + me + " \u00b7 your people, close by";
+  document.getElementById('header-tag').textContent = "hi " + me + " · your people, close by";
   applyAvatar(document.getElementById('header-avatar'), me, true);
   maybeShowNotifPrompt();
 }
@@ -1241,7 +1233,7 @@ async function loadTodayJournal(){
     const res = await storage.get('journal:' + me, false);
     const map = res && res.value ? JSON.parse(res.value) : {};
     const key = todayKey();
-    document.getElementById('journal-status').textContent = map[key] ? "You've already added an entry today \u2014 view it in your Journal tab" : "";
+    document.getElementById('journal-status').textContent = map[key] ? "You've already added an entry today — view it in your Journal tab" : "";
   }catch(e){
     document.getElementById('journal-status').textContent = '';
   }
@@ -1256,7 +1248,7 @@ async function saveJournal(){
     map[key] = map[key] ? map[key] + '\n\n' + text : text;
     await storage.set('journal:' + me, JSON.stringify(map), false);
     document.getElementById('journal-input').value = '';
-    document.getElementById('journal-status').textContent = "Saved \u2714\ufe0f — view it in your Journal tab";
+    document.getElementById('journal-status').textContent = "Saved ✔️ — view it in your Journal tab";
     showToast("Saved to your Journal");
   }catch(e){
     showToast("Couldn't save — try again");
@@ -1317,7 +1309,7 @@ async function markCheckedIn(){
     map[name] = new Date().toISOString();
     await storage.set('checkins:' + me, JSON.stringify(map), true);
     sendPush('Worth a hello 👋', me + ' checked in with you', [name], 'today');
-    showToast("Marked \u2014 nice one");
+    showToast("Marked — nice one");
     renderNudge();
   }catch(e){ showToast("Couldn't save that — try again"); }
 }
@@ -1343,7 +1335,7 @@ async function shareLocationCore(manual){
       await storage.set('location:' + me, JSON.stringify(data), true);
       await storage.set('active:' + me, new Date().toISOString(), true);
       locationDenied = false;
-      if(manual) document.getElementById('location-status').textContent = "Shared \u2014 up to date as of just now.";
+      if(manual) document.getElementById('location-status').textContent = "Shared — up to date as of just now.";
       if(!hasLoggedLocationThisSession){
         hasLoggedLocationThisSession = true;
         logActivity('📍', `<b>${escapeHtml(me)}</b> shared their location`);
@@ -1467,7 +1459,7 @@ async function renderMemories(){
           <span class="avatar-fallback avatar-sm" id="mem-avatar-${idx}" style="background:${avatarColor(m.author)}">${initials(m.author)}</span>
           <span class="memory-emoji">${m.emoji}</span>
           <span class="memory-author">${escapeHtml(m.author)}</span>
-          <span class="memory-time">\u00b7 ${timeAgo(m.timestamp)}</span>
+          <span class="memory-time">· ${timeAgo(m.timestamp)}</span>
         </div>
         ${m.text ? `<div class="memory-text">${escapeHtml(m.text)}</div>` : ''}
         ${m.hasPhoto ? `<img class="memory-photo" id="mem-photo-${idx}" alt="memory photo">` : ''}
@@ -1519,7 +1511,7 @@ function renderUpcoming(){
       <div class="event-item" style="cursor:pointer;" onclick="calSelectDay('${ev.date}')">
         <div class="row between">
           <strong>${escapeHtml(ev.title)}</strong>
-          <span class="small">${niceDate}${ev.time ? ' \u00b7 ' + escapeHtml(ev.time) : ''}</span>
+          <span class="small">${niceDate}${ev.time ? ' · ' + escapeHtml(ev.time) : ''}</span>
         </div>
         <div style="margin-top:6px;">${(ev.attendees||[]).map(a=>`<span class="attendee-tag">${escapeHtml(a)}</span>`).join('')}</div>
         <div class="small" style="margin-top:4px;">added by ${escapeHtml(ev.author)}</div>
@@ -1575,7 +1567,7 @@ function renderCalDayPanel(){
   const isToday = calSelectedDate === todayKey();
   const [y,mo,d] = calSelectedDate.split('-');
   const niceDate = new Date(Number(y), Number(mo)-1, Number(d)).toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
-  heading.textContent = isToday ? `Today \u00b7 ${niceDate}` : niceDate;
+  heading.textContent = isToday ? `Today · ${niceDate}` : niceDate;
 
   const dayEvents = calendarEvents.filter(e=>e.date === calSelectedDate);
   const attendeeSet = new Set();
@@ -1679,7 +1671,7 @@ async function triggerInstall(){
   const choice = await deferredPrompt.userChoice;
   deferredPrompt = null;
   document.getElementById('install-banner').style.display = 'none';
-  if(choice.outcome === 'accepted') showToast('Installed \u2014 find it on your home screen');
+  if(choice.outcome === 'accepted') showToast('Installed — find it on your home screen');
 }
 function dismissInstallBanner(){
   document.getElementById('install-banner').style.display = 'none';
